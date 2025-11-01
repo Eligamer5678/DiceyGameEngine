@@ -757,7 +757,7 @@ export default class Draw {
         ctx.restore();
     }
 
-    image(img, pos, size = null, invert = null, rad = 0, opacity = 1) {
+    image(img, pos, size = null, invert = null, rad = 0, opacity = 1, smoothing = true) {
         pos = this.pv(pos.clone())
         size = this.pv(size.clone())
         const ctx = this._assertCtx('image');
@@ -766,6 +766,19 @@ export default class Draw {
         const h = size?.y ?? img.height;
 
         ctx.save();
+        // control image smoothing (anti-aliasing) per-draw
+        try {
+            if (smoothing === false) {
+                ctx.imageSmoothingEnabled = false;
+                if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'low';
+            } else if (smoothing === true) {
+                if ('imageSmoothingEnabled' in ctx) ctx.imageSmoothingEnabled = true;
+                if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
+            }
+        } catch (e) {
+            // ignore if context doesn't support these properties
+        }
+
         ctx.globalAlpha *= opacity;
 
         // Move to the image position
@@ -782,6 +795,90 @@ export default class Draw {
 
         // Draw image centered at origin
         ctx.drawImage(img, -w / 2, -h / 2, w, h);
+
+        ctx.restore();
+    }
+
+    /**
+     * Draw a frame from a SpriteSheet-like object.
+     * sheet: object with properties `sheet` (Image), `slicePx` (frame size in pixels),
+     *        and `animations` (Map or plain object) mapping name -> { row, frameCount } (or { row, frames }).
+     * pos, size: Vector (top-left) or size null to use slice size.
+     * animation: name of registered animation in sheet.animations
+     * frame: frame index (0-based)
+     * invert: optional flip vector like {x:-1,y:1}
+     * opacity: optional opacity multiplier
+     */
+    sheet(sheet, pos, size = null, animation = null, frame = 0, invert = null, opacity = 1, smoothing = true) {
+        const ctx = this._assertCtx('sheet');
+        if (!sheet || !sheet.sheet || !sheet.slicePx) {
+            console.warn('Draw.sheet: invalid sheet provided');
+            return;
+        }
+
+        // resolve animation metadata (support Map or plain object)
+        let meta = null;
+        if (animation) {
+            if (sheet.animations instanceof Map) meta = sheet.animations.get(animation);
+            else if (sheet.animations && sheet.animations[animation]) meta = sheet.animations[animation];
+        }
+        // if no meta found, fall back to row 0 and compute frameCount from image width
+        const slice = sheet.slicePx;
+        const img = sheet.sheet;
+        const sw = slice;
+        const sh = slice;
+        const row = meta && (meta.row !== undefined) ? meta.row : 0;
+        const frameCount = meta ? (meta.frameCount ?? meta.frames ?? Math.floor(img.width / slice)) : Math.floor(img.width / slice);
+
+        // clamp frame
+        let fi = Math.floor(Number(frame) || 0);
+        if (fi < 0) fi = 0;
+        if (frameCount > 0) fi = Math.min(fi, frameCount - 1);
+
+        // source coords
+        const sx = fi * sw;
+        const sy = row * sh;
+
+        // destination size
+        let dstW, dstH;
+        if (size) {
+            const s = _asVec(size);
+            dstW = s.x; dstH = s.y;
+        } else {
+            dstW = sw; dstH = sh;
+        }
+
+        const pPos = this.pv(pos.clone());
+        const px = pPos.x + this.px(dstW) / 2;
+        const py = pPos.y + this.py(dstH) / 2;
+
+        ctx.save();
+        ctx.translate(px, py);
+        // control image smoothing (anti-aliasing) per-draw
+        try {
+            if (smoothing === false) {
+                ctx.imageSmoothingEnabled = false;
+                if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'low';
+            } else if (smoothing === true) {
+                if ('imageSmoothingEnabled' in ctx) ctx.imageSmoothingEnabled = true;
+                if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
+            }
+        } catch (e) {
+            // ignore if context doesn't support these properties
+        }
+        if (invert) {
+            const inv = _asVec(invert);
+            const fx = inv.x < 0 ? -1 : 1;
+            const fy = inv.y < 0 ? -1 : 1;
+            ctx.scale(fx, fy);
+        }
+        ctx.globalAlpha *= (opacity !== undefined ? opacity : 1);
+
+        try {
+            ctx.drawImage(img, sx, sy, sw, sh, -this.px(dstW) / 2, -this.py(dstH) / 2, this.px(dstW), this.py(dstH));
+        } catch (e) {
+            console.warn('Draw.sheet: drawImage failed', e);
+        }
 
         ctx.restore();
     }

@@ -1,3 +1,5 @@
+import Timer from '../js/Timer.js';
+
 export default class Scene {
     constructor(name, Draw, UIDraw, mouse, keys, saver, switchScene, loadScene, preloadScene, removeScene, RSS, EM, server, playerCount=1) { // RSS: remoteStateSignal, EM: enableMultiplayer (signal)
         this.name = name;
@@ -17,6 +19,14 @@ export default class Scene {
         this.EM = EM; // enable multiplayer signal
         this.server = server; // ServerManager instance
         this.elements = new Map()
+
+        // Tick / multiplayer defaults
+        this.tickRate = 1000 / 60; // ms per tick (default 60hz)
+        this.tickCount = 0;
+        this.tickAccumulator = 0;
+        this.lastStateSend = 0;
+        this.paused = false;
+        this.frameCount = 0;
     }
 
     /**
@@ -28,228 +38,65 @@ export default class Scene {
     }
 
     /**
-     * Load images
+     * Called once when swapped to for the first time, to set up scene variables.
      */
-    async loadImages(){
-        // Set up image paths, map them to Image objects after.
-        // Examples:
-        this.BackgroundImageLinks = {
+    onReady() {
 
-        }
-
-        this.BackgroundImages = {
-
-        }
-        // type like 'bg': 'filepath'
-        this.SpriteImageLinks = {
-            
-        }
-        
-        // type like 'bg': new Image
-        this.SpriteImages = {
-
-        }
-
-
-
-        for(let file in this.BackgroundImages){
-            this.BackgroundImages[file].src = this.BackgroundImageLinks[file];
-            if (this._loadingOverlay) {
-                // rough incremental progress while images load
-                const idx = Object.keys(this.BackgroundImages).indexOf(file);
-                const total = Object.keys(this.BackgroundImages).length + Object.keys(this.SpriteImages).length;
-                const progress = Math.min(0.2, ((idx + 1) / total) * 0.2);
-                this._loadingOverlay.setProgress(progress);
-            }
-        }
-        for(let file in this.SpriteImages){
-            this.SpriteImages[file].src = this.SpriteImageLinks[file];
-            if (this._loadingOverlay) {
-                const idx = Object.keys(this.SpriteImages).indexOf(file) + Object.keys(this.BackgroundImages).length;
-                const total = Object.keys(this.BackgroundImages).length + Object.keys(this.SpriteImages).length;
-                const progress = Math.min(0.25, ((idx + 1) / total) * 0.25);
-                this._loadingOverlay.setProgress(progress);
-            }
-        }
-        // Images loaded
-        this.loaded += 1;
-        this._loadingOverlay && this._loadingOverlay.setProgress(0.25);
     }
 
     /**
-     * Load music
+     * Called every time this scene is switched to (after onReady).
+     * Returns a Map of resources to keep cached (key: resource name, value: resource type).
      */
-    async loadMusic(){
-        // Get music files
-        const musicFiles = [
-            //['intro', "Assets/sounds/music_intro.wav"],
-            //['part1', "Assets/sounds/music_part1.wav"],
-            //['part2', "Assets/sounds/music_part2.wav"],
-            //['segue', "Assets/sounds/music_segue.wav"],
-            //['part3', "Assets/sounds/music_part3.wav"]
-        ];
-        // Load music files
-        let musicSkipped = false;
-        for (const [key, path] of musicFiles) {
-            // If the debug flag was toggled to skip during loading, stop further loads
-            if (window.Debug && typeof window.Debug.getFlag === 'function' && window.Debug.getFlag('skipLoads')) {
-                console.log('Skipping remaining music loads (user requested skip)');
-                musicSkipped = true;
-                break;
-            }
-            await this.musician.loadSound(key, path);
-            if (this._loadingOverlay) {
-                // progress between 50% and 90% during music load
-                const idx = musicFiles.findIndex(m => m[0] === key);
-                const progress = 0.5 + (idx + 1) / musicFiles.length * 0.4;
-                this._loadingOverlay.setProgress(progress);
-                this._loadingOverlay.setMessage(`Loading music: ${key}`);
-            }
+    onSwitchTo() {
+        // Default behaviour: disconnect any RSS handler, clear draw layers and return packaged resources.
+        if (this.RSS && this._rssHandler && typeof this.RSS.disconnect === 'function') {
+            try { this.RSS.disconnect(this._rssHandler); } catch (e) { /* ignore */ }
         }
-        // Music loaded
-        if (musicSkipped) {
-            this.loaded += 1;
-            this._loadingOverlay && this._loadingOverlay.setMessage('Music skipped');
-            return;
-        }
-
-        // Set up conductor sections and conditions for music transitions
-        this.conductor.setSections([
-            { name: "intro", loop: false },
-            { name: "part1", loop: true },
-            { name: "part2", loop: true },
-            { name: "part3", loop: true },
-            { name: "part4", loop: true },
-            { name: "segue", loop: false },
-            { name: "part5", loop: false }
-        ]);
-
-        // conditions correspond to section indexes 1..4
-        const conditions = [
-            () => 1+1==11, //example condition
-        ];
-        conditions.forEach((cond, i) => this.conductor.setCondition(i + 1, cond));
-
-        // Start playback
-        this.loaded += 1;
-        this._loadingOverlay && this._loadingOverlay.setProgress(0.9);
+        // allow scenes to cleanup debug signals
+        if (typeof this.disconnectDebug === 'function') this.disconnectDebug();
+        if (this.Draw && typeof this.Draw.clear === 'function') this.Draw.clear();
+        if (this.UIDraw && typeof this.UIDraw.clear === 'function') this.UIDraw.clear();
+        return this.packResources ? this.packResources() : null;
     }
 
     /**
-     * Load sounds
+     * Called every time this scene is switched away from.
      */
-    async loadSounds(){
-        // Loading sound effects
-
-        // Just some example sound effects
-        const sfx = [
-            //['crash', 'Assets/sounds/crash.wav'],
-            //['break', 'Assets/sounds/break.wav'],
-            //['place', 'Assets/sounds/place.wav'],
-            //['rotate', 'Assets/sounds/rotate.wav'],
-        ];
-
-        for (const [key, path] of sfx) {
-            await this.soundGuy.loadSound(key, path);
-            if (this._loadingOverlay) {
-                const idx = sfx.findIndex(s => s[0] === key);
-                const progress = 0.25 + (idx + 1) / sfx.length * 0.25;
-                this._loadingOverlay.setProgress(progress);
-                this._loadingOverlay.setMessage(`Loading SFX: ${key}`);
-            }
+    onSwitchFrom(resources) {
+        // Default: try to unpack resources and reconnect RSS
+        if (this.unpackResources) this.unpackResources(resources);
+        if (this.RSS && typeof this.RSS.connect === 'function') {
+            this._rssHandler = (state) => { if (this.applyRemoteState) this.applyRemoteState(state); };
+            this.RSS.connect(this._rssHandler);
         }
-        // Sound effects loaded
-        this.loaded += 1;
-        this._loadingOverlay && this._loadingOverlay.setProgress(0.5);
     }
 
+    
     /**
-     * Sends the local player's state to the server for multiplayer synchronization.
-     * 
-     * To send data: diff[playerId + 'key'] = value;
+     * Packs local resources into a Map to be transferred between scenes.
+     * Child scenes can override to add scene-specific resources.
      */
-    sendState(){
-        if (this.server) {
-            if (!this.lastStateSend) this.lastStateSend = 0;
-            const now = performance.now();
-            if (now - this.lastStateSend >= this.tickRate) {
-                const diff = {};
-                // Put data to send into diff object here
-
-
-
-                // Core data
-                diff[this.playerId + 'paused'] = this.paused;
-                diff[this.playerId + 'scene'] = {'scene':'game', 'time':now};
-
-                // Send data
-                if (Object.keys(diff).length > 0) {
-                    this.server.sendDiff(diff);
-                }
-
-                this.lastStateSend = now;
-            }
-        }
-    }
-
-    /**
-     * Get data from server and apply to local game state.
-     * Data looks like: state[remoteId + 'key']
-     * 
-     * Use sendState to send data.
-     * 
-     * This is called automatically when new data is received from the server.
-     * 
-     * @param {*} state The data sent from the server
-     * @returns 
-     */
-    applyRemoteState = (state) => {
-        if (!state) return;
-        const remoteId = this.playerId === 'p1' ? 'p2' : 'p1';
-        // Receive data here
-
-
-
-        this.applyTick(remoteId, state);
-
-        // Make sure clients are in the same scene
-        if (state[remoteId + 'scene']) {
-            if (state[remoteId + 'scene'].scene !== 'game' && this.playerId !== 'p1') {
-                this.switchScene(state[remoteId + 'scene'].scene);
-            }
-        }
-    }
-
-    /** 
-     * Packs local resources into a Map to be transferred between scenes 
-     * */
-    packResources(){
-        let resources = new Map();
-        resources.set('settings', this.settings)
-        resources.set('backgrounds',this.BackgroundImages)
-        resources.set('sprites',this.SpriteImages)
-        resources.set('soundguy',this.soundGuy)
-        resources.set('musician',this.musician)
-        resources.set('conductor',this.conductor)
-        resources.set('id',this.playerId)
+    packResources() {
+        const resources = new Map();
+        if (this.settings) resources.set('settings', this.settings);
+        if (this.BackgroundImages) resources.set('backgrounds', this.BackgroundImages);
+        if (this.SpriteImages) resources.set('sprites', this.SpriteImages);
+        if (this.soundGuy) resources.set('soundguy', this.soundGuy);
+        if (this.musician) resources.set('musician', this.musician);
+        if (this.conductor) resources.set('conductor', this.conductor);
+        if (this.narrator) resources.set('narrator', this.narrator);
+        if (this.playerId) resources.set('id', this.playerId);
         return resources;
     }
 
-    /** 
-     * Unpacks resources from a Map transferred between scenes 
-     * */
+    /**
+     * Unpack resources provided from previous scene. Safe to call with null.
+     */
     unpackResources(resources){
-        if (!resources) {
-            console.log('No resources...');
-            return false;
-        }
-
-        if (!(resources instanceof Map)) {
-            console.error('Invalid resources type');
-            return false;
-        }
+        if (!resources) return false;
+        if (!(resources instanceof Map)) return false;
         for (const [key, value] of resources.entries()) {
-            let log = true;
             switch (key) {
                 case 'settings': this.settings = value; break;
                 case 'backgrounds': this.BackgroundImages = value; break;
@@ -257,24 +104,35 @@ export default class Scene {
                 case 'soundguy': this.soundGuy = value; break;
                 case 'musician': this.musician = value; break;
                 case 'conductor': this.conductor = value; break;
+                case 'narrator': this.narrator = value; break;
                 case 'id': this.playerId = value; break;
-                default: console.warn(`Unknown resource key: ${key}`); log = false;
+                default: console.warn(`Unknown resource key: ${key}`);
             }
         }
         return true;
     }
 
-    /** 
-     * Called when switching to this scene. 
+    /**
+     * Sends local player state to the server (throttled by tickRate). Child scenes should populate diff.
      */
-    onSwitchTo() {
-        if (this.RSS && this._rssHandler && typeof this.RSS.disconnect === 'function') {
-            try { this.RSS.disconnect(this._rssHandler); } catch (e) { /* ignore */ }
+    sendState(){
+        if (this.server) {
+            if (!this.lastStateSend) this.lastStateSend = 0;
+            const now = performance.now();
+            if (now - this.lastStateSend >= this.tickRate) {
+                const diff = {};
+                // Scenes should add custom state into diff before default fields are added.
+
+                if (this.playerId) diff[this.playerId + 'paused'] = this.paused;
+                diff[this.playerId + 'scene'] = { scene: this.name, time: now };
+
+                if (Object.keys(diff).length > 0) {
+                    try { this.server.sendDiff(diff); } catch (e) { console.warn('sendState failed', e); }
+                }
+
+                this.lastStateSend = now;
+            }
         }
-        this.disconnectDebug();
-        this.Draw.clear()
-        this.UIDraw.clear()
-        return this.packResources(); 
     }
 
     /**
@@ -317,8 +175,74 @@ export default class Scene {
     }
 
     /** 
+     * Disconnect debug console commands 
+     * */
+    disconnectDebug(){
+
+    }
+
+    /**
+     * Apply incoming remote state; default will advance ticks to match remote.
+     */
+    applyRemoteState(state){
+        if (!state) return;
+        const remoteId = this.playerId === 'p1' ? 'p2' : 'p1';
+        this.applyTick(remoteId, state);
+        if (state[remoteId + 'scene']) {
+            if (state[remoteId + 'scene'].scene !== this.name && this.playerId !== 'p1') {
+                this.switchScene(state[remoteId + 'scene'].scene);
+            }
+        }
+    }
+
+    applyTick(remoteId, state){
+        const tickKey = remoteId + 'tick';
+        if (!(tickKey in state)) return;
+        while (state[tickKey] > this.tickCount) this.tick();
+    }
+
+
+    /**
+     * Default music condition hook.
+     */
+    setConditions(){
+        // override in scenes
+    }
+
+    /**
+     * Create timers used by the scene.
+     */
+    createTimers(){
+        this.sessionTimer = new Timer('stopwatch');
+        this.sessionTimer.start();
+    }
+
+    updateTimers(delta){
+        if (this.paused) return;
+        if (this.sessionTimer && typeof this.sessionTimer.update === 'function') this.sessionTimer.update(delta);
+    }
+
+    /**
+     * Default tick handler. Calls `sceneTick` if defined by the scene.
+     */
+    tick(){
+        this.tickCount++;
+        const tickDelta = this.tickRate / 1000;
+        this.updateTimers(tickDelta);
+        if (typeof this.sceneTick === 'function') this.sceneTick(tickDelta);
+    }
+
+    pause(){ this.paused = true; if (this.sessionTimer) this.sessionTimer.pause(); }
+    unpause(){ this.paused = false; if (this.sessionTimer) this.sessionTimer.unpause(); }
+    draw() {
+        if(!this.isReady) return;
+        this.Draw.background('#FFFFFF')
+
+    }
+    
+    /** 
      * Used to run ticks.
-     * Don't put update logic here, use tick() instead.
+     * Don't put update logic here, implement `sceneTick(delta)` instead.
      * (aside from UI updates)
      */
     update(delta) {
@@ -338,76 +262,5 @@ export default class Scene {
             this.tickAccumulator -= this.tickRate;
         }
         this.frameCount+=1;
-    }
-
-    /** Put input logic here**/
-    tickInput(){
-
-    }
-
-    /**
-     * Set up player ID
-     */
-    enableTwoPlayer(id) {
-        this.playerId = id;
-        const isP1 = this.playerId === 'p1';
-        this.twoPlayer = true;
-    }
-
-    /** 
-     * Disconnect debug console commands 
-     * */
-    disconnectDebug(){
-
-    }
-
-    /** 
-     * Pauses the game
-     *  */
-    pause() {
-        this.paused = true;
-    }
-
-    /** 
-     * Unpauses the game 
-     * */
-    unpause() {
-        this.paused = false;
-    }
-
-    
-
-    /** 
-     * Called when switching from this scene.
-     * 
-    */
-    onSwitchFrom(resources) {
-        if(!this.unpackResources(resources)) return false;
-        this.RSS.connect((state) => {this.applyRemoteState(state)});
-
-    }
-
-    /** 
-     * Music conditions for switching tracks.
-     * Use () => Boolean to add one.
-    */
-    setConditions(){
-        const conditions = [
-
-        ];
-        conditions.forEach((cond, i) => this.conductor.setCondition(i + 1, cond));
-    }
-
-
-    /**
-     * Called once when swapped to for the first time, to set up scene variables.
-     */
-    onReady() {
-
-    }
-
-
-    draw() {
-
     }
 }
